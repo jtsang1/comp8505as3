@@ -2,7 +2,7 @@
 # encoding: ASCII-8BIT
 
 #Usage
-#ruby dns_spoof.rb <router> <target_ip> <sniffed_domain> <crafted_ip>
+#ruby dns_spoof.rb [router] [target_ip] [sniffed_domain] [crafted_ip]
 
 
 
